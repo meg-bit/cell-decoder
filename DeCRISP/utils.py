@@ -46,3 +46,16 @@ def create_celltable(Xthresh, masks_mem, n_std, up_adjust, left_adjust):
     #             cell_table.loc[mem_id, k] += 1
                 cell_table[mem_id, k] += 1
     return cell_table
+
+
+def corr(cell_table, codebook):
+    cell_norm = np.sqrt(np.sum(np.power(cell_table, 2), axis=1))
+    cell_corr = cell_table.dot(codebook.T) / np.reshape(cell_norm + 1e-6, (-1,1))  # add 1e-6 to avoid the denominator being 0
+    return cell_corr
+
+
+def argmax_thresh(a, axis, thresh):
+    rows_too_small = np.where(np.max(a, axis=1) < thresh)
+    my_argmax = a.argmax(axis=axis)
+    my_argmax[rows_too_small] = -1
+    return my_argmax
