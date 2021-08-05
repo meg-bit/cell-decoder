@@ -1,5 +1,20 @@
 import numpy as np
 from scipy import ndimage
+import matplotlib.pyplot as plt
+    
+def remove_border(X, up, down, left, right):
+    return X[:, :, up:down, left:right]
+
+# def subtract_background(X, window_size):
+
+
+def limit_upper(Xnorm, upper):
+    Xthresh = Xnorm.copy()
+    for i in range(Xthresh.shape[0]):
+        single = Xthresh[i, 0,]
+        single[single > upper[i]] = upper[i]
+        Xthresh[i, 0] = single
+    return Xthresh
 
 
 # def mean_std(max_fil, num_std):
