@@ -1,26 +1,40 @@
 import numpy as np
 from scipy import ndimage
+from scipy import stats
+from skimage.filters import threshold_yen
 import matplotlib.pyplot as plt
     
-def remove_border(X, up, down, left, right):
-    return X[:, :, up:down, left:right]
 
-# def subtract_background(X, window_size):
-
-
-def limit_upper(Xnorm, upper):
-    Xthresh = Xnorm.copy()
-    for i in range(Xthresh.shape[0]):
-        single = Xthresh[i, 0,]
-        single[single > upper[i]] = upper[i]
-        Xthresh[i, 0] = single
-    return Xthresh
+def sample_size(r, alpha, beta):
+    C = 0.5 * np.log((1+r)/(1-r+1e-6))  # +1e-6 is to avoid zero division
+    z_alpha = np.abs(stats.norm.ppf(alpha/2))
+    z_beta = stats.norm.ppf(beta)
+    N = int(np.abs(((z_alpha+z_beta)/C) ** 2 + 3))  # int(np.abs()) is to convert to an integer
+    return N
 
 
-# def mean_std(max_fil, num_std):
-#     return max_fil.mean() + max_fil.std() * num_std
+def minmax(x, min_all, max_all):
+    y = (x-min_all)/max_all
+    return y
 
-def create_celltable(Xthresh, masks_mem, n_std, up_adjust, left_adjust):
+
+def argmax_thresh(a, axis, thresh):
+    rows_too_small = np.where(np.max(a, axis=1) < thresh)
+    my_argmax = a.argmax(axis=axis)
+    my_argmax[rows_too_small] = -1
+    return my_argmax
+
+    
+def cal_metric(cell_table, codebook):
+    """
+    Calculate the correlation between the cell_table and the codebook
+    """
+    cell_norm = np.sqrt(np.sum(np.power(cell_table, 2), axis=1))
+    cell_corr = cell_table.dot(codebook.T) / np.reshape(cell_norm + 1e-6, (-1,1))  # add 1e-6 to avoid the denominator being 0
+    return cell_corr
+
+
+def create_celltable(Xyen, masks_mem, up_adjust, left_adjust):
     """
     Given the membrane segmentation and the registered images with amplicon spots, generate the cell-by-amplicon table.
     
@@ -32,46 +46,75 @@ def create_celltable(Xthresh, masks_mem, n_std, up_adjust, left_adjust):
     Returns:
 
     """
-    cell_table = np.zeros((len(np.unique(masks_mem)), Xthresh.shape[0]))
+    cell_table = np.zeros((len(np.unique(masks_mem)), Xyen.shape[0]))
 
-    for k in range(Xthresh.shape[0]):  # for the kth image
-        # Get local maximum values of desired neighborhood (size of the amplicons)
-        max_fil = ndimage.maximum_filter(Xthresh[k,], size=(1, 2, 2))
-
-        # Threshold the image to find locations of interest
-        # assuming 6 standard deviations above the mean of the image
-        peak_thresh = max_fil.mean() + max_fil.std() * n_std
+    for k in range(Xyen.shape[0]):  # for the kth image
+        # Get local maximum values of desired neighborhood
+        max_fil = ndimage.maximum_filter(Xyen[k,], size=(1, 2, 2))
+        peak_thresh = 0.2
 
         # find areas greater than peak_thresh
         labels, num_labels = ndimage.label(max_fil > peak_thresh)
 
         # Get the positions of the maxima
-        coords = ndimage.measurements.center_of_mass(Xthresh[k,], 
+        coords = ndimage.measurements.center_of_mass(Xyen[k,], 
                                                      labels=labels, 
                                                      index=np.arange(1, num_labels + 1))
-
-        # # Get the maximum value in the labels
-        # values = ndimage.measurements.maximum(img, labels=labels, index=np.arange(1, num_labels + 1))
-        # # https://stackoverflow.com/questions/55453110/how-to-find-local-maxima-of-3d-array-in-python
 
         for _, m1, m2 in coords:
             m1 = int(np.round(m1))
             m2 = int(np.round(m2))
             mem_id = masks_mem[m1+up_adjust, m2+left_adjust]  # important to match the coordinates if images are trimmed
             if mem_id>0: # 0 is background
-    #             cell_table.loc[mem_id, k] += 1
                 cell_table[mem_id, k] += 1
     return cell_table
 
 
-def corr(cell_table, codebook):
-    cell_norm = np.sqrt(np.sum(np.power(cell_table, 2), axis=1))
-    cell_corr = cell_table.dot(codebook.T) / np.reshape(cell_norm + 1e-6, (-1,1))  # add 1e-6 to avoid the denominator being 0
-    return cell_corr
+def lower_thresh(Xthresh):
+    Xyen = np.zeros(Xthresh.shape)
+    for i in range(Xthresh.shape[0]):
+        image = Xthresh[i, 0]
+        thresh = threshold_yen(image)
+        binary = image > thresh
+        Xyen[i, 0, ] = binary
+    return Xyen
 
 
-def argmax_thresh(a, axis, thresh):
-    rows_too_small = np.where(np.max(a, axis=1) < thresh)
-    my_argmax = a.argmax(axis=axis)
-    my_argmax[rows_too_small] = -1
-    return my_argmax
+def upper_collapse(Xnorm, upper):
+    Xthresh = Xnorm.copy()
+    for i in range(Xthresh.shape[0]):
+        single = Xthresh[i, 0,]
+        single[single > upper[i]] = upper[i]
+        Xthresh[i, 0] = single
+    return Xthresh
+
+
+def upper_thresh(Xnorm, n_channels, n_cycles, min_bin):
+    upper = np.zeros(n_channels * n_cycles)
+    n_pixels = np.prod(Xnorm.shape[2:4])  # Xnorm.shape[2, 4] is the dimension of the 2D image
+    for i in range(Xnorm.shape[0]):
+        hist, edges = np.histogram(Xnorm[i, 0].ravel(), bins=256, range=(0, 1))
+        z = np.cumsum(hist)
+        dz = np.diff(z)
+        idx = np.array(np.where(dz >= min_bin)).ravel()[-1]  # 3 set a param here
+        upper[i] = edges[idx]
+    return upper
+
+
+# def limit_upper(Xnorm, upper):
+#     Xthresh = Xnorm.copy()
+#     for i in range(Xthresh.shape[0]):
+#         single = Xthresh[i, 0,]
+#         single[single > upper[i]] = upper[i]
+#         Xthresh[i, 0] = single
+#     return Xthresh
+
+
+# def subtract_background(X, window_size):
+
+
+def remove_border(X, up, down, left, right):
+    return X[:, :, up:down, left:right]
+        
+
+
