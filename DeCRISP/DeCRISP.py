@@ -5,6 +5,25 @@ from skimage.filters import threshold_yen
 import matplotlib.pyplot as plt
     
 
+def mask_select(masks_mem, df_cell_id, metric):
+    no_double = df_cell_id.barcode[df_cell_id[metric]==True]
+    mask_color_nd = np.zeros((*masks_mem.shape, 3))
+    for i in no_double.index:
+        if i>0:
+            mask_color_nd[np.array(masks_mem)==i] = color_dict[no_double[i]]
+    return mask_color_nd
+    
+def mask_all(masks_mem, cell_id):
+    mask = np.zeros(masks_mem.shape)
+    for i, l in enumerate(cell_id[1:]):
+        mask[masks_mem==i+1] = l+1  # avoid label l being 0 because the background is 0
+        
+    mask_color = np.zeros((*mask.shape, 3))
+    for i in range(len(color_dict)): 
+        mask_color[mask==i+1] = color_dict[i]
+    return mask_color
+    
+    
 def sample_size(r, alpha, beta):
     C = 0.5 * np.log((1+r)/(1-r+1e-6))  # +1e-6 is to avoid zero division
     z_alpha = np.abs(stats.norm.ppf(alpha/2))
@@ -117,4 +136,15 @@ def remove_border(X, up, down, left, right):
     return X[:, :, up:down, left:right]
         
 
-
+color_dict = {
+    0: (0,0,255),
+    1: (0,255,0),
+    2: (255, 0, 0),
+    3: (0,255,255),
+    4: (255,0,255),
+    5: (255,255,0),
+    6: (255,127,0),
+    7: (0,127,0),
+    8: (127,0,0),
+    9: (255,255,255)
+}
