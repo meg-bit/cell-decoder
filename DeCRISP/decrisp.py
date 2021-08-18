@@ -28,7 +28,7 @@ def sample_size(r, alpha, beta):
     C = 0.5 * np.log((1+r)/(1-r+1e-6))  # +1e-6 is to avoid zero division
     z_alpha = np.abs(stats.norm.ppf(alpha/2))
     z_beta = stats.norm.ppf(beta)
-    N = int(np.abs(((z_alpha+z_beta)/C) ** 2 + 3))  # int(np.abs()) is to convert to an integer
+    N = int(np.abs(((z_alpha+z_beta)/(C)) ** 2 + 3))  # int(np.abs()) is to convert to an integer
     return N
 
 
@@ -70,7 +70,7 @@ def create_celltable(Xyen, masks_mem, up_adjust, left_adjust):
     for k in range(Xyen.shape[0]):  # for the kth image
         # Get local maximum values of desired neighborhood
         max_fil = ndimage.maximum_filter(Xyen[k,], size=(1, 2, 2))
-        peak_thresh = 0.2
+        peak_thresh = max_fil.mean() + max_fil.std() * 4
 
         # find areas greater than peak_thresh
         labels, num_labels = ndimage.label(max_fil > peak_thresh)
@@ -89,14 +89,14 @@ def create_celltable(Xyen, masks_mem, up_adjust, left_adjust):
     return cell_table
 
 
-def lower_thresh(Xthresh):
-    Xyen = np.zeros(Xthresh.shape)
-    for i in range(Xthresh.shape[0]):
-        image = Xthresh[i, 0]
-        thresh = threshold_yen(image)
-        binary = image > thresh
-        Xyen[i, 0, ] = binary
-    return Xyen
+# def lower_thresh(Xthresh):
+#     Xyen = np.zeros(Xthresh.shape)
+#     for i in range(Xthresh.shape[0]):
+#         image = Xthresh[i, 0]
+#         thresh = threshold_yen(image)
+#         binary = image > thresh
+#         Xyen[i, 0, ] = binary
+#     return Xyen
 
 
 def upper_collapse(Xnorm, upper):
@@ -120,6 +120,17 @@ def upper_thresh(Xnorm, n_channels, n_cycles, min_bin):
     return upper
 
 
+# def upper_thresh(Xnorm, n_channels, n_cycles, min_bin):
+#     upper = np.zeros(n_channels * n_cycles)
+#     n_pixels = np.prod(Xnorm.shape[2:4])  # Xnorm.shape[2, 4] is the dimension of the 2D image
+#     for i in range(Xnorm.shape[0]):
+#         hist, edges = np.histogram(Xnorm[i, 0].ravel(), bins=256, range=(0, 1))
+#         z = np.cumsum(hist)
+#         idx = np.array(np.where(z >= (n_pixels-min_bin))).ravel()[0]
+#         upper[i] = edges[idx]
+#     return upper
+
+
 # def limit_upper(Xnorm, upper):
 #     Xthresh = Xnorm.copy()
 #     for i in range(Xthresh.shape[0]):
@@ -131,10 +142,6 @@ def upper_thresh(Xnorm, n_channels, n_cycles, min_bin):
 
 # def subtract_background(X, window_size):
 
-
-def remove_border(X, up, down, left, right):
-    return X[:, :, up:down, left:right]
-        
 
 color_dict = {
     0: (0,0,255),
@@ -148,3 +155,7 @@ color_dict = {
     8: (127,0,0),
     9: (255,255,255)
 }
+
+
+def remove_border(X, up, down, left, right):
+    return X[:, :, up:down, left:right]
