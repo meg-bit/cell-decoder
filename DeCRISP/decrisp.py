@@ -1,7 +1,8 @@
 import numpy as np
 from scipy import ndimage
 from scipy import stats
-from skimage.filters import threshold_yen
+from skimage import filters
+from skimage.feature import peak_local_max
 import matplotlib.pyplot as plt
     
 
@@ -33,7 +34,7 @@ def sample_size(r, alpha, beta):
 
 
 def minmax(x, min_all, max_all):
-    y = (x-min_all)/max_all
+    y = (x-min_all)/(max_all+1e-6)
     return y
 
 
@@ -53,41 +54,56 @@ def cal_metric(cell_table, codebook):
     return cell_corr
 
 
-def create_celltable(Xyen, masks_mem, up_adjust, left_adjust):
-    """
-    Given the membrane segmentation and the registered images with amplicon spots, generate the cell-by-amplicon table.
+# def create_celltable(Xyen, masks_mem, up_adjust, left_adjust):
+#     """
+#     Given the membrane segmentation and the registered images with amplicon spots, generate the cell-by-amplicon table.
     
-    Args:
-        Xthresh: X after thresholding
-        masks_mem:
-        n_std: an int of the number of standard deviation above the mean for the peak_thresh
+#     Args:
+#         Xthresh: X after thresholding
+#         masks_mem:
+#         n_std: an int of the number of standard deviation above the mean for the peak_thresh
             
-    Returns:
+#     Returns:
+#     """
+#     cell_table = np.zeros((len(np.unique(masks_mem)), Xyen.shape[0]))
 
-    """
-    cell_table = np.zeros((len(np.unique(masks_mem)), Xyen.shape[0]))
+#     for k in range(Xyen.shape[0]):  # for the kth image
+# #         coords = peak_local_max(Xyen[k,], min_distance=2)
+#         # Get local maximum values of desired neighborhood
+#         max_fil = ndimage.maximum_filter(Xyen[k,], size=(1, 2, 2))
+#         peak_thresh = max_fil.mean() + max_fil.std() * 4
 
-    for k in range(Xyen.shape[0]):  # for the kth image
-        # Get local maximum values of desired neighborhood
-        max_fil = ndimage.maximum_filter(Xyen[k,], size=(1, 2, 2))
-        peak_thresh = max_fil.mean() + max_fil.std() * 4
+#         # find areas greater than peak_thresh
+#         labels, num_labels = ndimage.label(max_fil > peak_thresh)
 
-        # find areas greater than peak_thresh
-        labels, num_labels = ndimage.label(max_fil > peak_thresh)
+#         # Get the positions of the maxima
+#         coords = ndimage.measurements.center_of_mass(Xyen[k,], 
+#                                                      labels=labels, 
+#                                                      index=np.arange(1, num_labels + 1))
+    
+#         for _, m1, m2 in coords:
+#             m1 = int(np.round(m1))
+#             m2 = int(np.round(m2))
+#             mem_id = masks_mem[m1+up_adjust, m2+left_adjust]  # important to match the coordinates if images are trimmed
+#             if mem_id>0: # 0 is background
+#                 cell_table[mem_id, k] += 1
+#     return cell_table
 
-        # Get the positions of the maxima
-        coords = ndimage.measurements.center_of_mass(Xyen[k,], 
-                                                     labels=labels, 
-                                                     index=np.arange(1, num_labels + 1))
-
-        for _, m1, m2 in coords:
+def create_celltable(Xthresh, masks_mem, up, left, percentile):
+    cell_table = np.zeros((np.max(masks_mem), Xthresh.shape[0]))
+    for k in range(Xthresh.shape[0]):  # for the kth image
+        spotMask = np.zeros((Xthresh.shape[2], Xthresh.shape[3], 3)) 
+        max_fil = ndimage.maximum_filter(Xthresh[k, 0], size=(3, 3), mode='nearest')
+        h = np.percentile(Xthresh[k, 0].ravel(), percentile)
+        print(h)
+        coords = np.argwhere((max_fil == Xthresh[k, 0]) & (max_fil >= h))
+        for m1, m2 in coords:
             m1 = int(np.round(m1))
             m2 = int(np.round(m2))
-            mem_id = masks_mem[m1+up_adjust, m2+left_adjust]  # important to match the coordinates if images are trimmed
-            if mem_id>0: # 0 is background
+            mem_id = masks_mem[m1+up, m2+left]  # important to match the coordinates if images are trimmed
+            if mem_id>0:
                 cell_table[mem_id, k] += 1
     return cell_table
-
 
 # def lower_thresh(Xthresh):
 #     Xyen = np.zeros(Xthresh.shape)
@@ -159,3 +175,11 @@ color_dict = {
 
 def remove_border(X, up, down, left, right):
     return X[:, :, up:down, left:right]
+
+def background_subtract(Xcenter, sigma):
+    Xnorm = Xcenter - filters.gaussian(Xcenter, sigma=sigma, mode='nearest', preserve_range=True)
+    Xnorm = np.clip(Xnorm, 0, Xnorm.max())
+    return Xnorm
+
+def normalization(Xnorm):
+    return (Xnorm - Xnorm.min()) / Xnorm.max()
