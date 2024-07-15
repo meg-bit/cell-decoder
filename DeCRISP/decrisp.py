@@ -4,98 +4,108 @@ from scipy import stats
 from skimage import filters
 from skimage.feature import peak_local_max
 import matplotlib.pyplot as plt
-    
 
-def mask_select(masks_mem, df_cell_id, metric):
-    no_double = df_cell_id.barcode[df_cell_id[metric]==True]
-    mask_color_nd = np.zeros((*masks_mem.shape, 3))
-    for i in no_double.index:
-        if i>0:
-            mask_color_nd[np.array(masks_mem)==i] = color_dict[no_double[i]]
-    return mask_color_nd
-    
-def mask_all(masks_mem, cell_id):
-    mask = np.zeros(masks_mem.shape)
-    for i, l in enumerate(cell_id[1:]):
-        mask[masks_mem==i+1] = l+1  # avoid label l being 0 because the background is 0
-        
-    mask_color = np.zeros((*mask.shape, 3))
-    for i in range(len(color_dict)): 
-        mask_color[mask==i+1] = color_dict[i]
-    return mask_color
-    
-    
-def sample_size(r, alpha, beta):
-    C = 0.5 * np.log((1+r)/(1-r+1e-6))  # +1e-6 is to avoid zero division
-    z_alpha = np.abs(stats.norm.ppf(alpha/2))
-    z_beta = stats.norm.ppf(beta)
-    N = int(np.abs(((z_alpha+z_beta)/(C)) ** 2 + 3))  # int(np.abs()) is to convert to an integer
-    return N
-
-
-def minmax(x, min_all, max_all):
-    y = (x-min_all)/(max_all+1e-6)
-    return y
-
-
-def argmax_thresh(a, axis, thresh):
-    rows_too_small = np.where(np.max(a, axis=1) < thresh)
-    my_argmax = a.argmax(axis=axis)
-    my_argmax[rows_too_small] = -1
-    return my_argmax
-
-    
-def cal_metric(cell_table, codebook):
+def remove_borders(X, up, down, left, right):
     """
-    Calculate the correlation between the cell_table and the codebook
+    Crop the input array X by removing the specified border.
+
+    Args:
+        X (numpy.ndarray): Input array to be cropped.
+        up (int): Number of rows to remove from the top.
+        down (int): Number of rows to remove from the bottom.
+        left (int): Number of columns to remove from the left.
+        right (int): Number of columns to remove from the right.
+
+    Returns:
+        numpy.ndarray: Cropped array.
     """
-    cell_norm = np.sqrt(np.sum(np.power(cell_table, 2), axis=1))
-    cell_corr = cell_table.dot(codebook.T) / np.reshape(cell_norm + 1e-6, (-1,1))  # add 1e-6 to avoid the denominator being 0
-    return cell_corr
+    return X[:, :, up:down, left:right]
 
+def substract_background(Xcenter, sigma):
+    """
+    Subtract a Gaussian-smoothed version of Xcenter from itself to remove background noise.
 
-# def create_celltable(Xyen, masks_mem, up_adjust, left_adjust):
-#     """
-#     Given the membrane segmentation and the registered images with amplicon spots, generate the cell-by-amplicon table.
-    
-#     Args:
-#         Xthresh: X after thresholding
-#         masks_mem:
-#         n_std: an int of the number of standard deviation above the mean for the peak_thresh
-            
-#     Returns:
-#     """
-#     cell_table = np.zeros((len(np.unique(masks_mem)), Xyen.shape[0]))
+    Args:
+        Xcenter (numpy.ndarray): Input array representing the center data.
+        sigma (float): Standard deviation for Gaussian smoothing.
 
-#     for k in range(Xyen.shape[0]):  # for the kth image
-# #         coords = peak_local_max(Xyen[k,], min_distance=2)
-#         # Get local maximum values of desired neighborhood
-#         max_fil = ndimage.maximum_filter(Xyen[k,], size=(1, 2, 2))
-#         peak_thresh = max_fil.mean() + max_fil.std() * 4
+    Returns:
+        numpy.ndarray: Background-subtracted array with non-negative values.
+    """
+    Xsmooth = filters.gaussian(Xcenter, sigma=sigma, preserve_range=True)
+    Xnorm = Xcenter - Xsmooth
+    return Xnorm
 
-#         # find areas greater than peak_thresh
-#         labels, num_labels = ndimage.label(max_fil > peak_thresh)
+def normalize(Xnorm):
+    """
+    Normalize the input array by scaling its values to the range [0, 1] to make different images in the same range.
 
-#         # Get the positions of the maxima
-#         coords = ndimage.measurements.center_of_mass(Xyen[k,], 
-#                                                      labels=labels, 
-#                                                      index=np.arange(1, num_labels + 1))
-    
-#         for _, m1, m2 in coords:
-#             m1 = int(np.round(m1))
-#             m2 = int(np.round(m2))
-#             mem_id = masks_mem[m1+up_adjust, m2+left_adjust]  # important to match the coordinates if images are trimmed
-#             if mem_id>0: # 0 is background
-#                 cell_table[mem_id, k] += 1
-#     return cell_table
+    Args:
+        Xnorm (numpy.ndarray): Input array to be normalized.
+
+    Returns:
+        numpy.ndarray: Normalized array with values in the range [0, 1].
+    """
+    return (Xnorm - Xnorm.min()) / Xnorm.max()
+
+def calc_upper_threshold(Xnorm, n_channels, n_cycles, min_bin=3):
+    """
+    Calculate the upper threshold for each channel and cycle.
+
+    Args:
+        Xnorm (np.ndarray): Normalized 3D image data.
+        n_channels (int): Number of channels.
+        n_cycles (int): Number of cycles.
+        min_bin (float): Minimum bin difference for threshold calculation.
+
+    Returns:
+        np.ndarray: Array of upper thresholds for each channel and cycle.
+    """
+    upper = np.zeros(n_channels * n_cycles)
+    for i in range(Xnorm.shape[0]):
+        hist, edges = np.histogram(Xnorm[i, 0].ravel(), bins=256, range=(0, 1))
+        z = np.cumsum(hist)
+        dz = np.diff(z)
+        idx = np.array(np.where(dz >= min_bin)).ravel()[-1]
+        upper[i] = edges[idx]
+    return upper
+
+def collapse(Xnorm, upper):
+     """
+    Apply upper threshold collapse to the normalized image data.
+
+    Args:
+        Xnorm (np.ndarray): Normalized 3D image data.
+        upper (np.ndarray): Array of upper thresholds for each channel and cycle.
+
+    Returns:
+        np.ndarray: Collapsed image data after applying upper threshold.
+    """
+    Xthresh = Xnorm.copy()
+    for i in range(Xthresh.shape[0]):
+        single = Xthresh[i, 0]
+        single[single > upper[i]] = upper[i]
+        Xthresh[i, 0] = single
+    return Xthresh
 
 def create_celltable(Xthresh, masks_mem, up, left, percentile):
+    """
+    Create a cell table based on thresholded image data.
+
+    Args:
+        Xthresh (np.ndarray): Thresholded 3D image data.
+        masks_mem (np.ndarray): Membrane masks (integer labels for each pixel).
+        up (int): Vertical offset for matching coordinates.
+        left (int): Horizontal offset for matching coordinates.
+        percentile (float): Percentile value for thresholding.
+
+    Returns:
+        np.ndarray: Cell table with counts for each membrane ID and the number of signal peaks.
+    """
     cell_table = np.zeros((np.max(masks_mem), Xthresh.shape[0]))
     for k in range(Xthresh.shape[0]):  # for the kth image
-        spotMask = np.zeros((Xthresh.shape[2], Xthresh.shape[3], 3)) 
         max_fil = ndimage.maximum_filter(Xthresh[k, 0], size=(3, 3), mode='nearest')
         h = np.percentile(Xthresh[k, 0].ravel(), percentile)
-        print(h)
         coords = np.argwhere((max_fil == Xthresh[k, 0]) & (max_fil >= h))
         for m1, m2 in coords:
             m1 = int(np.round(m1))
@@ -105,81 +115,104 @@ def create_celltable(Xthresh, masks_mem, up, left, percentile):
                 cell_table[mem_id, k] += 1
     return cell_table
 
-# def lower_thresh(Xthresh):
-#     Xyen = np.zeros(Xthresh.shape)
-#     for i in range(Xthresh.shape[0]):
-#         image = Xthresh[i, 0]
-#         thresh = threshold_yen(image)
-#         binary = image > thresh
-#         Xyen[i, 0, ] = binary
-#     return Xyen
+def calc_metric(cell_table, codebook):
+    """
+    Calculate the cross correlation between the cell_table and the codebook.
+
+    Args:
+        cell_table (np.ndarray): Cell table with counts (shape: [n_membranes, n_samples]).
+        codebook (np.ndarray): Reference codebook (shape: [n_membranes, n_features]).
+
+    Returns:
+        np.ndarray: Correlation matrix between cell_table and codebook.
+    """
+    cell_norm = np.sqrt(np.sum(np.power(cell_table, 2), axis=1))
+    cell_corr = cell_table.dot(codebook.T) / np.reshape(cell_norm + 1e-6, (-1,1))  # add 1e-6 to avoid the denominator being 0
+    return cell_corr
+
+def argmax_thresh(a, threshold):
+    """
+    Finds the index of the maximum value in each row of a 2D array, considering only values above a given threshold.
+
+    Args:
+        a (np.ndarray): Input 2D array.
+        threshold (float): Threshold value for filtering.
+
+    Returns:
+        np.ndarray: Array of indices corresponding to the maximum values in each row. If the maximum value in a row
+                    is below the threshold, the corresponding index is set to -1.
+    """
+    rows_too_small = np.where(np.max(a, axis=1) < threshold)
+    my_argmax = a.argmax(axis=1)
+    my_argmax[rows_too_small] = -1
+    return my_argmax
+
+def create_color_mask(masks_mem, cell_id):
+    """
+    Create a color mask based on membrane labels.
+
+    Args:
+        masks_mem (np.ndarray): Membrane masks (integer labels for each pixel).
+        cell_id (np.ndarray): Array of cell IDs (excluding background).
+
+    Returns:
+        np.ndarray: Color mask with RGB values.
+    """
+    color_dict = {
+        0: (0, 0, 255),
+        1: (0, 255, 0),
+        2: (255, 0, 0),
+        3: (0, 255, 255),
+        4: (255, 0, 255),
+        5: (255, 255, 0),
+        6: (255, 127, 0),
+        7: (0, 127, 0),
+        8: (127, 0, 0),
+        9: (255, 255, 255)
+    }
+    mask = np.zeros(masks_mem.shape)
+    for i, l in enumerate(cell_id[1:]):
+        mask[masks_mem == i + 1] = l + 1  # avoid label l being 0 because the background is 0
+
+    mask_color = np.zeros((*mask.shape, 3))
+    for i in range(len(color_dict)):
+        mask_color[mask == i + 1] = color_dict[i]
+    return mask_color
+    
+
+    
+    
 
 
-def upper_collapse(Xnorm, upper):
-    Xthresh = Xnorm.copy()
-    for i in range(Xthresh.shape[0]):
-        single = Xthresh[i, 0,]
-        single[single > upper[i]] = upper[i]
-        Xthresh[i, 0] = single
-    return Xthresh
 
 
-def upper_thresh(Xnorm, n_channels, n_cycles, min_bin):
-    upper = np.zeros(n_channels * n_cycles)
-    n_pixels = np.prod(Xnorm.shape[2:4])  # Xnorm.shape[2, 4] is the dimension of the 2D image
-    for i in range(Xnorm.shape[0]):
-        hist, edges = np.histogram(Xnorm[i, 0].ravel(), bins=256, range=(0, 1))
-        z = np.cumsum(hist)
-        dz = np.diff(z)
-        idx = np.array(np.where(dz >= min_bin)).ravel()[-1]  # 3 set a param here
-        upper[i] = edges[idx]
-    return upper
 
 
-# def upper_thresh(Xnorm, n_channels, n_cycles, min_bin):
-#     upper = np.zeros(n_channels * n_cycles)
-#     n_pixels = np.prod(Xnorm.shape[2:4])  # Xnorm.shape[2, 4] is the dimension of the 2D image
-#     for i in range(Xnorm.shape[0]):
-#         hist, edges = np.histogram(Xnorm[i, 0].ravel(), bins=256, range=(0, 1))
-#         z = np.cumsum(hist)
-#         idx = np.array(np.where(z >= (n_pixels-min_bin))).ravel()[0]
-#         upper[i] = edges[idx]
-#     return upper
 
 
-# def limit_upper(Xnorm, upper):
-#     Xthresh = Xnorm.copy()
-#     for i in range(Xthresh.shape[0]):
-#         single = Xthresh[i, 0,]
-#         single[single > upper[i]] = upper[i]
-#         Xthresh[i, 0] = single
-#     return Xthresh
+    
 
 
-# def subtract_background(X, window_size):
 
 
-color_dict = {
-    0: (0,0,255),
-    1: (0,255,0),
-    2: (255, 0, 0),
-    3: (0,255,255),
-    4: (255,0,255),
-    5: (255,255,0),
-    6: (255,127,0),
-    7: (0,127,0),
-    8: (127,0,0),
-    9: (255,255,255)
-}
 
 
-def remove_border(X, up, down, left, right):
-    return X[:, :, up:down, left:right]
 
-def background_subtract(Xcenter, sigma):
-    Xnorm = Xcenter - filters.gaussian(Xcenter, sigma=sigma, mode='nearest', preserve_range=True)
-    Xnorm = np.clip(Xnorm, 0, Xnorm.max())
-    return Xnorm
 
-def normalization(Xnorm):
-    return (Xnorm - Xnorm.min()) / Xnorm.max()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
